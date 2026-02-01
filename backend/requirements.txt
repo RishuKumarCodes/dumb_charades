@@ -1,24 +1,16 @@
 # FastAPI and Server
-fastapi==0.110.1
-uvicorn==0.25.0
-starlette==0.37.2
+fastapi
+uvicorn[standard]
 
 # MongoDB
-motor==3.3.1
-pymongo==4.5.0
-dnspython==2.8.0
+motor
+pymongo[srv]
 
 # Pydantic for data validation
-pydantic==2.12.5
-pydantic_core==2.41.5
+pydantic
 
 # Environment variables
-python-dotenv==1.2.1
+python-dotenv
 
-# CORS and HTTP
-python-multipart==0.0.21
-anyio==4.12.1
-
-# Utilities
-typing_extensions==4.15.0
-annotated-types==0.7.0
+# CORS support (included with starlette via fastapi)
+python-multipart
