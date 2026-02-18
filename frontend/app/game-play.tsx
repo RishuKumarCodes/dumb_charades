@@ -1,562 +1,303 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   TouchableOpacity,
-  Alert,
   Animated,
   Dimensions,
-  Modal,
   Platform,
-  Share,
-  Linking,
-  ScrollView,
+  Vibration,
+  Alert,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import QRCode from 'react-native-qrcode-svg';
+import { useGameStore } from '../src/stores/gameStore';
+import { formatTime } from '../src/utils/helpers';
 
 const { width } = Dimensions.get('window');
-const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
-const useNative = Platform.OS !== 'web';
 
-interface Movie {
-  id: string;
-  title: string;
-  year: number;
-  hero: string;
-  heroine: string;
-  word_count: number;
-  difficulty: string;
-  genre?: string;
-}
-
-interface Player {
-  id: string;
-  name: string;
-}
-
-interface Team {
-  name: string;
-  players: Player[];
-  score: number;
-  current_actor_index: number;
-}
-
-interface Game {
-  id: string;
-  team_a: Team;
-  team_b: Team;
-  settings: { timer_seconds: number; total_rounds: number; difficulty: string };
-  current_turn: string;
-  current_round: number;
-  used_movie_ids: string[];
-  status: string;
-  winner?: string;
-  share_code: string;
-}
-
-enum GamePhase {
-  READY = 'ready',
-  REVEAL = 'reveal',
-  ACTING = 'acting',
-  RESULT = 'result',
-}
+type GamePhase = 'waiting' | 'acting' | 'reveal' | 'between';
 
 export default function GamePlayScreen() {
   const router = useRouter();
-  const [game, setGame] = useState<Game | null>(null);
-  const [currentMovie, setCurrentMovie] = useState<Movie | null>(null);
-  const [phase, setPhase] = useState<GamePhase>(GamePhase.READY);
-  const [timeLeft, setTimeLeft] = useState(60);
-  const [showMovie, setShowMovie] = useState(false);
-  const [showExitModal, setShowExitModal] = useState(false);
-  const [showShareModal, setShowShareModal] = useState(false);
+  const { currentGame, currentMovie, getRandomMovie, submitTurn, resetGame } = useGameStore();
+  
+  const [phase, setPhase] = useState<GamePhase>('waiting');
+  const [timeLeft, setTimeLeft] = useState(currentGame?.settings.timerSeconds || 60);
+  const [hintsRevealed, setHintsRevealed] = useState({
+    words: false,
+    year: false,
+    hero: false,
+    heroine: false,
+  });
 
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const progressAnim = useRef(new Animated.Value(1)).current;
-  const pulseAnim = useRef(new Animated.Value(1)).current;
+  const cardScaleAnim = useRef(new Animated.Value(0.8)).current;
 
-  useEffect(() => {
-    loadGame();
-    return () => {
-      if (timerRef.current) clearInterval(timerRef.current);
-    };
-  }, []);
+  // Start the round
+  const startRound = useCallback(() => {
+    const movie = getRandomMovie();
+    if (!movie || !currentGame) return;
 
-  const loadGame = async () => {
-    try {
-      const gameData = await AsyncStorage.getItem('currentGame');
-      if (gameData) {
-        const parsedGame = JSON.parse(gameData);
-        setGame(parsedGame);
-        setTimeLeft(parsedGame.settings.timer_seconds);
-      }
-    } catch (error) {
-      console.error('Error loading game:', error);
-    }
-  };
+    setTimeLeft(currentGame.settings.timerSeconds);
+    setHintsRevealed({ words: false, year: false, hero: false, heroine: false });
+    setPhase('acting');
 
-  const fetchRandomMovie = async () => {
-    if (!game) return;
+    // Animate card
+    cardScaleAnim.setValue(0.8);
+    Animated.spring(cardScaleAnim, {
+      toValue: 1,
+      friction: 8,
+      useNativeDriver: Platform.OS !== 'web',
+    }).start();
 
-    try {
-      const excludeIds = game.used_movie_ids.join(',');
-      const url = `${BACKEND_URL}/api/movies/random?difficulty=${game.settings.difficulty}&exclude_ids=${excludeIds}`;
-      const response = await fetch(url);
-
-      if (!response.ok) {
-        Alert.alert('No more movies', 'All movies have been used! Resetting movie pool...');
-        await fetch(`${BACKEND_URL}/api/movies/reset-used`, { method: 'POST' });
-        return;
-      }
-
-      const movie = await response.json();
-      setCurrentMovie(movie);
-
-      // Add movie to used list
-      await fetch(`${BACKEND_URL}/api/games/${game.id}/add-used-movie?movie_id=${movie.id}`, {
-        method: 'POST',
-      });
-
-      // Update local game state
-      const updatedGame = {
-        ...game,
-        used_movie_ids: [...game.used_movie_ids, movie.id],
-      };
-      setGame(updatedGame);
-      await AsyncStorage.setItem('currentGame', JSON.stringify(updatedGame));
-    } catch (error) {
-      console.error('Error fetching movie:', error);
-      Alert.alert('Error', 'Failed to fetch movie');
-    }
-  };
-
-  const startTurn = async () => {
-    await fetchRandomMovie();
-    setPhase(GamePhase.REVEAL);
-  };
-
-  const startActing = () => {
-    if (!game) return;
-    setShowMovie(false);
-    setPhase(GamePhase.ACTING);
-    setTimeLeft(game.settings.timer_seconds);
-
+    // Reset progress animation
     progressAnim.setValue(1);
     Animated.timing(progressAnim, {
       toValue: 0,
-      duration: game.settings.timer_seconds * 1000,
-      useNativeDriver: false,
+      duration: currentGame.settings.timerSeconds * 1000,
+      useNativeDriver: Platform.OS !== 'web',
     }).start();
+  }, [currentGame, getRandomMovie]);
+
+  // Timer logic
+  useEffect(() => {
+    if (phase !== 'acting') return;
 
     timerRef.current = setInterval(() => {
       setTimeLeft((prev) => {
         if (prev <= 1) {
           if (timerRef.current) clearInterval(timerRef.current);
-          handleTimeUp();
+          setPhase('reveal');
+          if (Platform.OS !== 'web') {
+            Vibration.vibrate(500);
+          }
           return 0;
-        }
-        if (prev <= 10) {
-          Animated.sequence([
-            Animated.timing(pulseAnim, {
-              toValue: 1.2,
-              duration: 200,
-              useNativeDriver: useNative,
-            }),
-            Animated.timing(pulseAnim, {
-              toValue: 1,
-              duration: 200,
-              useNativeDriver: useNative,
-            }),
-          ]).start();
         }
         return prev - 1;
       });
     }, 1000);
-  };
 
-  const handleTimeUp = () => {
-    handleResult(false);
-  };
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
+  }, [phase]);
 
-  const handleCorrect = () => {
-    if (timerRef.current) clearInterval(timerRef.current);
-    handleResult(true);
-  };
-
-  const handleSkip = () => {
-    if (timerRef.current) clearInterval(timerRef.current);
-    handleResult(false);
-  };
-
-  const handleResult = async (correct: boolean) => {
-    if (!game) return;
-
-    try {
-      const response = await fetch(`${BACKEND_URL}/api/games/${game.id}/turn`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ game_id: game.id, correct }),
-      });
-
-      const updatedGame = await response.json();
-      setGame(updatedGame);
-      await AsyncStorage.setItem('currentGame', JSON.stringify(updatedGame));
-
-      if (updatedGame.status === 'completed') {
-        router.replace('/results');
-      } else {
-        setPhase(GamePhase.RESULT);
-        setTimeout(() => {
-          setPhase(GamePhase.READY);
-          setCurrentMovie(null);
-          setTimeLeft(game.settings.timer_seconds);
-        }, 2000);
-      }
-    } catch (error) {
-      console.error('Error submitting turn:', error);
+  // Handle correct/wrong answer
+  const handleAnswer = (correct: boolean) => {
+    submitTurn(correct);
+    
+    if (currentGame && currentGame.currentRound > currentGame.settings.totalRounds) {
+      router.replace('/results');
+    } else {
+      setPhase('between');
     }
   };
 
+  // Skip turn
+  const skipTurn = () => {
+    if (timerRef.current) clearInterval(timerRef.current);
+    setPhase('reveal');
+  };
+
+  // Reveal a hint
+  const revealHint = (hint: keyof typeof hintsRevealed) => {
+    setHintsRevealed((prev) => ({ ...prev, [hint]: true }));
+  };
+
+  // Exit game
   const exitGame = () => {
-    setShowExitModal(true);
+    Alert.alert(
+      'Exit Game',
+      'Are you sure you want to quit? Progress will be saved.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Exit',
+          style: 'destructive',
+          onPress: () => {
+            resetGame();
+            router.replace('/');
+          },
+        },
+      ]
+    );
   };
 
-  const confirmExit = async () => {
-    if (game) {
-      try {
-        await fetch(`${BACKEND_URL}/api/games/${game.id}`, { method: 'DELETE' });
-      } catch (error) {
-        console.log('Error deleting game:', error);
-      }
-    }
-    await AsyncStorage.removeItem('currentGame');
-    router.replace('/');
-  };
-
-  const shareGame = async () => {
-    if (!game) return;
-    
-    const shareUrl = `${BACKEND_URL}/join/${game.share_code}`;
-    const message = `🎬 Join my Dumb Charades game!\n\nGame Code: ${game.share_code}\n\nDownload the app and join using this code!\n\n${shareUrl}`;
-    
-    try {
-      if (Platform.OS === 'web') {
-        setShowShareModal(true);
-      } else {
-        await Share.share({
-          message: message,
-          title: 'Join Dumb Charades Game',
-        });
-      }
-    } catch (error) {
-      console.error('Error sharing:', error);
-    }
-  };
-
-  const shareViaWhatsApp = () => {
-    if (!game) return;
-    const message = encodeURIComponent(`🎬 Join my Dumb Charades game!\n\nGame Code: ${game.share_code}\n\nJoin us for some Bollywood fun!`);
-    const whatsappUrl = `https://wa.me/?text=${message}`;
-    Linking.openURL(whatsappUrl);
-  };
-
-  const getCurrentTeam = () => {
-    if (!game) return null;
-    return game.current_turn === 'team_a' ? game.team_a : game.team_b;
-  };
-
-  const getCurrentActor = () => {
-    const team = getCurrentTeam();
-    if (!team || team.players.length === 0) return null;
-    return team.players[team.current_actor_index];
-  };
-
-  const getTeamColor = () => {
-    if (!game) return '#f8d56b';
-    return game.current_turn === 'team_a' ? '#e94560' : '#4ecdc4';
-  };
-
-  const formatTime = (seconds: number) => {
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${mins}:${secs.toString().padStart(2, '0')}`;
-  };
-
-  if (!game) {
+  if (!currentGame) {
     return (
       <SafeAreaView style={styles.container}>
-        <View style={styles.loadingContainer}>
-          <Text style={styles.loadingText}>Loading game...</Text>
+        <View style={styles.centerContent}>
+          <Text style={styles.errorText}>No active game found</Text>
+          <TouchableOpacity style={styles.primaryButton} onPress={() => router.replace('/')}>
+            <Text style={styles.primaryButtonText}>Go Home</Text>
+          </TouchableOpacity>
         </View>
       </SafeAreaView>
     );
   }
 
-  const currentActor = getCurrentActor();
+  const currentTeam = currentGame.currentTurn === 'teamA' ? currentGame.teamA : currentGame.teamB;
+  const currentActor = currentTeam.players[currentTeam.currentActorIndex];
+  const teamColor = currentGame.currentTurn === 'teamA' ? '#4ecdc4' : '#e94560';
 
   return (
     <SafeAreaView style={styles.container}>
       {/* Header */}
       <View style={styles.header}>
         <TouchableOpacity onPress={exitGame} style={styles.exitButton}>
-          <Ionicons name="close" size={28} color="#e94560" />
+          <Ionicons name="close" size={24} color="#fff" />
         </TouchableOpacity>
-        <Text style={styles.roundText}>
-          Round {game.current_round}/{game.settings.total_rounds}
-        </Text>
-        <TouchableOpacity onPress={shareGame} style={styles.shareButton}>
-          <Ionicons name="share-social" size={24} color="#f8d56b" />
-        </TouchableOpacity>
-      </View>
-
-      {/* Scoreboard */}
-      <View style={styles.scoreboard}>
-        <View style={[styles.teamScore, game.current_turn === 'team_a' && styles.activeTeam]}>
-          <Text style={[styles.teamName, { color: '#e94560' }]}>Team A</Text>
-          <Text style={styles.score}>{game.team_a.score}</Text>
+        <View style={styles.roundInfo}>
+          <Text style={styles.roundText}>Round {currentGame.currentRound}/{currentGame.settings.totalRounds}</Text>
         </View>
-        <View style={styles.vs}>
-          <Text style={styles.vsText}>VS</Text>
-        </View>
-        <View style={[styles.teamScore, game.current_turn === 'team_b' && styles.activeTeam]}>
-          <Text style={[styles.teamName, { color: '#4ecdc4' }]}>Team B</Text>
-          <Text style={styles.score}>{game.team_b.score}</Text>
+        <View style={styles.scoreContainer}>
+          <Text style={[styles.score, { color: '#4ecdc4' }]}>{currentGame.teamA.score}</Text>
+          <Text style={styles.scoreDivider}>:</Text>
+          <Text style={[styles.score, { color: '#e94560' }]}>{currentGame.teamB.score}</Text>
         </View>
       </View>
 
       {/* Main Content */}
-      <ScrollView style={styles.mainContent} contentContainerStyle={styles.mainContentContainer}>
-        {phase === GamePhase.READY && (
-          <View style={styles.readyContainer}>
-            <View style={[styles.turnBadge, { backgroundColor: getTeamColor() }]}>
-              <Text style={styles.turnBadgeText}>{getCurrentTeam()?.name}'s Turn</Text>
-            </View>
-            
-            {/* Current Actor Display */}
-            {currentActor && (
-              <View style={styles.actorContainer}>
-                <Ionicons name="person-circle" size={60} color={getTeamColor()} />
-                <Text style={styles.actorLabel}>Actor</Text>
-                <Text style={styles.actorName}>{currentActor.name}</Text>
-              </View>
-            )}
-            
-            <Text style={styles.instructionText}>Get ready to act!</Text>
-            <TouchableOpacity
-              style={[styles.bigButton, { backgroundColor: getTeamColor() }]}
-              onPress={startTurn}
-              activeOpacity={0.8}
-            >
-              <Ionicons name="play" size={40} color="#fff" />
-              <Text style={styles.bigButtonText}>Start Turn</Text>
+      <View style={styles.content}>
+        {/* Waiting Phase */}
+        {phase === 'waiting' && (
+          <View style={styles.waitingContainer}>
+            <Text style={[styles.teamTurn, { color: teamColor }]}>{currentTeam.name}'s Turn</Text>
+            <Text style={styles.actorName}>{currentActor?.name || 'Player'} is acting</Text>
+            <TouchableOpacity style={styles.startRoundButton} onPress={startRound}>
+              <Ionicons name="play" size={32} color="#1a1a2e" />
+              <Text style={styles.startRoundText}>Start Round</Text>
             </TouchableOpacity>
           </View>
         )}
 
-        {phase === GamePhase.REVEAL && currentMovie && (
-          <View style={styles.revealContainer}>
-            {currentActor && (
-              <View style={styles.actorBadge}>
-                <Ionicons name="person" size={20} color="#fff" />
-                <Text style={styles.actorBadgeText}>{currentActor.name} is acting!</Text>
-              </View>
-            )}
-            
-            <Text style={styles.revealTitle}>Movie for Actor</Text>
-            <TouchableOpacity
-              style={styles.revealCard}
-              onPress={() => setShowMovie(!showMovie)}
-              activeOpacity={0.9}
-            >
-              {showMovie ? (
-                <>
-                  <Text style={styles.movieTitle}>{currentMovie.title}</Text>
-                  <Text style={styles.movieYear}>({currentMovie.year})</Text>
-                </>
-              ) : (
-                <>
-                  <Ionicons name="eye-off" size={48} color="#f8d56b" />
-                  <Text style={styles.tapToReveal}>Tap to Reveal</Text>
-                  <Text style={styles.onlyActorText}>Only the actor should see this!</Text>
-                </>
-              )}
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={[styles.startActingButton, { backgroundColor: getTeamColor() }]}
-              onPress={startActing}
-              activeOpacity={0.8}
-            >
-              <Text style={styles.startActingText}>Ready! Start Timer</Text>
-            </TouchableOpacity>
-          </View>
-        )}
-
-        {phase === GamePhase.ACTING && currentMovie && (
-          <View style={styles.actingContainer}>
+        {/* Acting Phase */}
+        {phase === 'acting' && currentMovie && (
+          <Animated.View style={[styles.movieCard, { transform: [{ scale: cardScaleAnim }] }]}>
             {/* Timer */}
-            <Animated.View
-              style={[
-                styles.timerContainer,
-                { transform: [{ scale: pulseAnim }] },
-              ]}
-            >
-              <Text
-                style={[
-                  styles.timerText,
-                  timeLeft <= 10 && { color: '#e94560' },
-                ]}
-              >
+            <View style={styles.timerContainer}>
+              <Text style={[styles.timerText, timeLeft <= 10 && styles.timerWarning]}>
                 {formatTime(timeLeft)}
               </Text>
-            </Animated.View>
+              <View style={styles.progressBar}>
+                <Animated.View
+                  style={[
+                    styles.progressFill,
+                    {
+                      width: progressAnim.interpolate({
+                        inputRange: [0, 1],
+                        outputRange: ['0%', '100%'],
+                      }),
+                      backgroundColor: timeLeft <= 10 ? '#e94560' : '#f8d56b',
+                    },
+                  ]}
+                />
+              </View>
+            </View>
 
-            {/* Progress Bar */}
-            <View style={styles.progressBarContainer}>
-              <Animated.View
-                style={[
-                  styles.progressBar,
-                  {
-                    width: progressAnim.interpolate({
-                      inputRange: [0, 1],
-                      outputRange: ['0%', '100%'],
-                    }),
-                    backgroundColor: timeLeft <= 10 ? '#e94560' : '#f8d56b',
-                  },
-                ]}
-              />
+            {/* Movie Title */}
+            <View style={styles.movieTitleContainer}>
+              <Text style={styles.movieTitle}>{currentMovie.title}</Text>
+              <View style={styles.difficultyBadge}>
+                <Text style={styles.difficultyText}>{currentMovie.difficulty}</Text>
+              </View>
             </View>
 
             {/* Hints */}
             <View style={styles.hintsContainer}>
-              <Text style={styles.hintsTitle}>Hints for Guessing Team</Text>
-              <View style={styles.hintsGrid}>
-                <View style={styles.hintBox}>
-                  <Ionicons name="text" size={24} color="#f8d56b" />
-                  <Text style={styles.hintLabel}>Words</Text>
-                  <Text style={styles.hintValue}>{currentMovie.word_count}</Text>
-                </View>
-                <View style={styles.hintBox}>
-                  <Ionicons name="calendar" size={24} color="#f8d56b" />
-                  <Text style={styles.hintLabel}>Year</Text>
-                  <Text style={styles.hintValue}>{currentMovie.year}</Text>
-                </View>
-                <View style={[styles.hintBox, styles.hintBoxWide]}>
-                  <Ionicons name="man" size={24} color="#4ecdc4" />
-                  <Text style={styles.hintLabel}>Hero</Text>
-                  <Text style={styles.hintValueLarge}>{currentMovie.hero}</Text>
-                </View>
-                <View style={[styles.hintBox, styles.hintBoxWide]}>
-                  <Ionicons name="woman" size={24} color="#e94560" />
-                  <Text style={styles.hintLabel}>Heroine</Text>
-                  <Text style={styles.hintValueLarge}>{currentMovie.heroine}</Text>
-                </View>
-              </View>
+              <TouchableOpacity
+                style={[styles.hintButton, hintsRevealed.words && styles.hintRevealed]}
+                onPress={() => revealHint('words')}
+              >
+                <Ionicons name="text" size={20} color={hintsRevealed.words ? '#1a1a2e' : '#f8d56b'} />
+                <Text style={[styles.hintLabel, hintsRevealed.words && styles.hintLabelRevealed]}>
+                  {hintsRevealed.words ? `${currentMovie.wordCount} words` : 'Words'}
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.hintButton, hintsRevealed.year && styles.hintRevealed]}
+                onPress={() => revealHint('year')}
+              >
+                <Ionicons name="calendar" size={20} color={hintsRevealed.year ? '#1a1a2e' : '#f8d56b'} />
+                <Text style={[styles.hintLabel, hintsRevealed.year && styles.hintLabelRevealed]}>
+                  {hintsRevealed.year ? currentMovie.year.toString() : 'Year'}
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.hintButton, hintsRevealed.hero && styles.hintRevealed]}
+                onPress={() => revealHint('hero')}
+              >
+                <Ionicons name="man" size={20} color={hintsRevealed.hero ? '#1a1a2e' : '#f8d56b'} />
+                <Text style={[styles.hintLabel, hintsRevealed.hero && styles.hintLabelRevealed]}>
+                  {hintsRevealed.hero ? currentMovie.hero : 'Hero'}
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.hintButton, hintsRevealed.heroine && styles.hintRevealed]}
+                onPress={() => revealHint('heroine')}
+              >
+                <Ionicons name="woman" size={20} color={hintsRevealed.heroine ? '#1a1a2e' : '#f8d56b'} />
+                <Text style={[styles.hintLabel, hintsRevealed.heroine && styles.hintLabelRevealed]}>
+                  {hintsRevealed.heroine ? currentMovie.heroine : 'Heroine'}
+                </Text>
+              </TouchableOpacity>
             </View>
 
-            {/* Action Buttons */}
-            <View style={styles.actionButtons}>
+            {/* Skip Button */}
+            <TouchableOpacity style={styles.skipButton} onPress={skipTurn}>
+              <Text style={styles.skipButtonText}>Skip / Time Up</Text>
+            </TouchableOpacity>
+          </Animated.View>
+        )}
+
+        {/* Reveal Phase */}
+        {phase === 'reveal' && currentMovie && (
+          <View style={styles.revealContainer}>
+            <Text style={styles.timeUpText}>⏰ Time's Up!</Text>
+            <Text style={styles.revealMovieTitle}>{currentMovie.title}</Text>
+            <Text style={styles.revealQuestion}>Did they guess it?</Text>
+            <View style={styles.answerButtons}>
               <TouchableOpacity
-                style={[styles.actionButton, styles.skipButton]}
-                onPress={handleSkip}
-                activeOpacity={0.8}
+                style={[styles.answerButton, styles.correctButton]}
+                onPress={() => handleAnswer(true)}
               >
-                <Ionicons name="close" size={32} color="#fff" />
-                <Text style={styles.actionButtonText}>Skip</Text>
+                <Ionicons name="checkmark-circle" size={28} color="#fff" />
+                <Text style={styles.answerButtonText}>Correct!</Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={[styles.actionButton, styles.correctButton]}
-                onPress={handleCorrect}
-                activeOpacity={0.8}
+                style={[styles.answerButton, styles.wrongButton]}
+                onPress={() => handleAnswer(false)}
               >
-                <Ionicons name="checkmark" size={32} color="#fff" />
-                <Text style={styles.actionButtonText}>Correct!</Text>
+                <Ionicons name="close-circle" size={28} color="#fff" />
+                <Text style={styles.answerButtonText}>Wrong</Text>
               </TouchableOpacity>
             </View>
           </View>
         )}
 
-        {phase === GamePhase.RESULT && (
-          <View style={styles.resultContainer}>
-            <Text style={styles.resultText}>Next team's turn...</Text>
+        {/* Between Rounds Phase */}
+        {phase === 'between' && (
+          <View style={styles.betweenContainer}>
+            <Text style={styles.betweenText}>Get Ready!</Text>
+            <Text style={[styles.nextTeamText, { color: teamColor }]}>
+              {currentTeam.name}'s Turn
+            </Text>
+            <Text style={styles.nextActorText}>
+              {currentActor?.name || 'Player'} will act
+            </Text>
+            <TouchableOpacity style={styles.continueButton} onPress={startRound}>
+              <Text style={styles.continueButtonText}>Continue</Text>
+            </TouchableOpacity>
           </View>
         )}
-      </ScrollView>
-
-      {/* Exit Modal */}
-      <Modal visible={showExitModal} transparent animationType="fade">
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <Ionicons name="warning" size={48} color="#f8d56b" />
-            <Text style={styles.modalTitle}>Exit Game?</Text>
-            <Text style={styles.modalText}>Your progress will be lost.</Text>
-            <View style={styles.modalButtons}>
-              <TouchableOpacity
-                style={styles.modalCancelButton}
-                onPress={() => setShowExitModal(false)}
-              >
-                <Text style={styles.modalCancelText}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.modalConfirmButton}
-                onPress={confirmExit}
-              >
-                <Text style={styles.modalConfirmText}>Exit</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </View>
-      </Modal>
-
-      {/* Share Modal */}
-      <Modal visible={showShareModal} transparent animationType="fade">
-        <View style={styles.modalOverlay}>
-          <View style={styles.shareModalContent}>
-            <TouchableOpacity 
-              style={styles.closeShareModal}
-              onPress={() => setShowShareModal(false)}
-            >
-              <Ionicons name="close" size={28} color="#fff" />
-            </TouchableOpacity>
-            
-            <Text style={styles.shareModalTitle}>Share Game</Text>
-            
-            <View style={styles.qrContainer}>
-              {Platform.OS !== 'web' ? (
-                <QRCode
-                  value={`${BACKEND_URL}/join/${game.share_code}`}
-                  size={180}
-                  backgroundColor="#fff"
-                  color="#1a1a2e"
-                />
-              ) : (
-                <View style={styles.qrPlaceholder}>
-                  <Ionicons name="qr-code" size={80} color="#f8d56b" />
-                </View>
-              )}
-            </View>
-            
-            <View style={styles.shareCodeContainer}>
-              <Text style={styles.shareCodeLabel}>Game Code</Text>
-              <Text style={styles.shareCode}>{game.share_code}</Text>
-            </View>
-            
-            <TouchableOpacity
-              style={styles.whatsappButton}
-              onPress={shareViaWhatsApp}
-              activeOpacity={0.8}
-            >
-              <Ionicons name="logo-whatsapp" size={28} color="#fff" />
-              <Text style={styles.whatsappButtonText}>Share via WhatsApp</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
+      </View>
     </SafeAreaView>
   );
 }
@@ -566,169 +307,126 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#1a1a2e',
   },
-  loadingContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  loadingText: {
-    fontSize: 18,
-    color: '#f8d56b',
-  },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: 16,
     paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#2a2a4e',
   },
   exitButton: {
     padding: 8,
   },
+  roundInfo: {
+    alignItems: 'center',
+  },
   roundText: {
-    fontSize: 18,
-    fontWeight: 'bold',
+    fontSize: 16,
     color: '#f8d56b',
+    fontWeight: '600',
   },
-  shareButton: {
-    padding: 8,
-  },
-  scoreboard: {
+  scoreContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 12,
-    paddingHorizontal: 20,
-  },
-  teamScore: {
-    flex: 1,
-    alignItems: 'center',
-    padding: 12,
-    borderRadius: 12,
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
-  },
-  activeTeam: {
-    backgroundColor: 'rgba(248, 213, 107, 0.15)',
-    borderWidth: 2,
-    borderColor: '#f8d56b',
-  },
-  teamName: {
-    fontSize: 14,
-    fontWeight: '600',
   },
   score: {
-    fontSize: 32,
-    fontWeight: 'bold',
-    color: '#fff',
-  },
-  vs: {
-    paddingHorizontal: 16,
-  },
-  vsText: {
-    fontSize: 14,
-    fontWeight: 'bold',
-    color: '#666',
-  },
-  mainContent: {
-    flex: 1,
-  },
-  mainContentContainer: {
-    padding: 16,
-    paddingBottom: 40,
-  },
-  readyContainer: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    minHeight: 400,
-  },
-  turnBadge: {
-    paddingVertical: 12,
-    paddingHorizontal: 32,
-    borderRadius: 25,
-    marginBottom: 20,
-  },
-  turnBadgeText: {
-    fontSize: 22,
-    fontWeight: 'bold',
-    color: '#fff',
-  },
-  actorContainer: {
-    alignItems: 'center',
-    backgroundColor: 'rgba(248, 213, 107, 0.1)',
-    paddingVertical: 20,
-    paddingHorizontal: 40,
-    borderRadius: 20,
-    marginBottom: 20,
-  },
-  actorLabel: {
-    fontSize: 14,
-    color: '#a0a0a0',
-    marginTop: 8,
-  },
-  actorName: {
     fontSize: 24,
     fontWeight: 'bold',
-    color: '#fff',
-    marginTop: 4,
   },
-  instructionText: {
-    fontSize: 16,
-    color: '#a0a0a0',
-    marginBottom: 30,
+  scoreDivider: {
+    fontSize: 24,
+    color: '#666',
+    marginHorizontal: 8,
   },
-  bigButton: {
+  content: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  centerContent: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  errorText: {
+    fontSize: 18,
+    color: '#e94560',
+    marginBottom: 20,
+  },
+  primaryButton: {
+    backgroundColor: '#f8d56b',
+    paddingVertical: 16,
+    paddingHorizontal: 32,
+    borderRadius: 25,
+  },
+  primaryButtonText: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#1a1a2e',
+  },
+  waitingContainer: {
+    alignItems: 'center',
+  },
+  teamTurn: {
+    fontSize: 32,
+    fontWeight: 'bold',
+    marginBottom: 12,
+  },
+  actorName: {
+    fontSize: 18,
+    color: '#aaa',
+    marginBottom: 32,
+  },
+  startRoundButton: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
+    backgroundColor: '#f8d56b',
     paddingVertical: 20,
-    paddingHorizontal: 48,
-    borderRadius: 40,
-    width: '100%',
-    maxWidth: 300,
+    paddingHorizontal: 40,
+    borderRadius: 30,
   },
-  bigButtonText: {
+  startRoundText: {
     fontSize: 22,
     fontWeight: 'bold',
-    color: '#fff',
+    color: '#1a1a2e',
     marginLeft: 12,
   },
-  revealContainer: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    minHeight: 400,
-  },
-  actorBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: 'rgba(248, 213, 107, 0.2)',
-    paddingVertical: 8,
-    paddingHorizontal: 16,
-    borderRadius: 20,
-    marginBottom: 16,
-  },
-  actorBadgeText: {
-    fontSize: 14,
-    color: '#f8d56b',
-    marginLeft: 8,
-    fontWeight: '600',
-  },
-  revealTitle: {
-    fontSize: 18,
-    color: '#f8d56b',
-    marginBottom: 16,
-  },
-  revealCard: {
-    width: '100%',
-    aspectRatio: 1.5,
-    backgroundColor: 'rgba(248, 213, 107, 0.1)',
-    borderRadius: 20,
-    borderWidth: 2,
-    borderColor: '#f8d56b',
-    alignItems: 'center',
-    justifyContent: 'center',
+  movieCard: {
+    backgroundColor: '#16213e',
+    borderRadius: 24,
     padding: 24,
+    width: width - 40,
+    maxWidth: 400,
+  },
+  timerContainer: {
+    alignItems: 'center',
+    marginBottom: 20,
+  },
+  timerText: {
+    fontSize: 48,
+    fontWeight: 'bold',
+    color: '#f8d56b',
+  },
+  timerWarning: {
+    color: '#e94560',
+  },
+  progressBar: {
+    width: '100%',
+    height: 6,
+    backgroundColor: '#2a2a4e',
+    borderRadius: 3,
+    marginTop: 12,
+    overflow: 'hidden',
+  },
+  progressFill: {
+    height: '100%',
+    borderRadius: 3,
+  },
+  movieTitleContainer: {
+    alignItems: 'center',
     marginBottom: 24,
   },
   movieTitle: {
@@ -736,256 +434,129 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     color: '#fff',
     textAlign: 'center',
-  },
-  movieYear: {
-    fontSize: 18,
-    color: '#f8d56b',
-    marginTop: 8,
-  },
-  tapToReveal: {
-    fontSize: 16,
-    color: '#f8d56b',
-    marginTop: 16,
-  },
-  onlyActorText: {
-    fontSize: 12,
-    color: '#e94560',
-    marginTop: 8,
-  },
-  startActingButton: {
-    paddingVertical: 16,
-    paddingHorizontal: 48,
-    borderRadius: 30,
-  },
-  startActingText: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: '#fff',
-  },
-  actingContainer: {
-    flex: 1,
-  },
-  timerContainer: {
-    alignItems: 'center',
     marginBottom: 12,
   },
-  timerText: {
-    fontSize: 56,
-    fontWeight: 'bold',
+  difficultyBadge: {
+    backgroundColor: 'rgba(248, 213, 107, 0.2)',
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  difficultyText: {
+    fontSize: 12,
     color: '#f8d56b',
-  },
-  progressBarContainer: {
-    height: 8,
-    backgroundColor: 'rgba(255, 255, 255, 0.1)',
-    borderRadius: 4,
-    marginBottom: 20,
-    overflow: 'hidden',
-  },
-  progressBar: {
-    height: '100%',
-    borderRadius: 4,
+    textTransform: 'uppercase',
+    fontWeight: '600',
   },
   hintsContainer: {
-    backgroundColor: 'rgba(248, 213, 107, 0.08)',
-    borderRadius: 16,
-    padding: 16,
-    marginBottom: 20,
-  },
-  hintsTitle: {
-    fontSize: 14,
-    color: '#f8d56b',
-    textAlign: 'center',
-    marginBottom: 16,
-  },
-  hintsGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    justifyContent: 'space-between',
+    justifyContent: 'center',
+    gap: 10,
+    marginBottom: 24,
   },
-  hintBox: {
-    width: '48%',
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
-    borderRadius: 12,
-    padding: 12,
+  hintButton: {
+    flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 10,
+    backgroundColor: 'rgba(248, 213, 107, 0.1)',
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#f8d56b',
   },
-  hintBoxWide: {
-    width: '48%',
+  hintRevealed: {
+    backgroundColor: '#f8d56b',
+    borderColor: '#f8d56b',
   },
   hintLabel: {
-    fontSize: 11,
-    color: '#a0a0a0',
-    marginTop: 4,
+    fontSize: 13,
+    color: '#f8d56b',
+    marginLeft: 6,
+    fontWeight: '500',
   },
-  hintValue: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: '#fff',
-    marginTop: 2,
-    textAlign: 'center',
-  },
-  hintValueLarge: {
-    fontSize: 14,
-    fontWeight: 'bold',
-    color: '#fff',
-    marginTop: 2,
-    textAlign: 'center',
-  },
-  actionButtons: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    gap: 16,
-  },
-  actionButton: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 16,
-    borderRadius: 16,
+  hintLabelRevealed: {
+    color: '#1a1a2e',
   },
   skipButton: {
-    backgroundColor: '#e94560',
+    alignItems: 'center',
+    paddingVertical: 12,
+  },
+  skipButtonText: {
+    fontSize: 16,
+    color: '#e94560',
+    fontWeight: '600',
+  },
+  revealContainer: {
+    alignItems: 'center',
+  },
+  timeUpText: {
+    fontSize: 24,
+    color: '#e94560',
+    marginBottom: 16,
+  },
+  revealMovieTitle: {
+    fontSize: 32,
+    fontWeight: 'bold',
+    color: '#f8d56b',
+    textAlign: 'center',
+    marginBottom: 24,
+  },
+  revealQuestion: {
+    fontSize: 18,
+    color: '#aaa',
+    marginBottom: 24,
+  },
+  answerButtons: {
+    flexDirection: 'row',
+    gap: 16,
+  },
+  answerButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 16,
+    paddingHorizontal: 24,
+    borderRadius: 25,
   },
   correctButton: {
     backgroundColor: '#4ecdc4',
   },
-  actionButtonText: {
-    fontSize: 16,
+  wrongButton: {
+    backgroundColor: '#e94560',
+  },
+  answerButtonText: {
+    fontSize: 18,
     fontWeight: 'bold',
     color: '#fff',
     marginLeft: 8,
   },
-  resultContainer: {
-    flex: 1,
+  betweenContainer: {
     alignItems: 'center',
-    justifyContent: 'center',
-    minHeight: 400,
   },
-  resultText: {
-    fontSize: 24,
-    color: '#f8d56b',
-  },
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.8)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  modalContent: {
-    backgroundColor: '#1a1a2e',
-    borderRadius: 20,
-    padding: 32,
-    alignItems: 'center',
-    width: '80%',
-    maxWidth: 320,
-    borderWidth: 2,
-    borderColor: '#f8d56b',
-  },
-  modalTitle: {
-    fontSize: 24,
-    fontWeight: 'bold',
+  betweenText: {
+    fontSize: 28,
     color: '#fff',
-    marginTop: 16,
+    marginBottom: 16,
+  },
+  nextTeamText: {
+    fontSize: 32,
+    fontWeight: 'bold',
     marginBottom: 8,
   },
-  modalText: {
-    fontSize: 16,
-    color: '#a0a0a0',
-    textAlign: 'center',
-    marginBottom: 24,
+  nextActorText: {
+    fontSize: 18,
+    color: '#aaa',
+    marginBottom: 32,
   },
-  modalButtons: {
-    flexDirection: 'row',
-    gap: 16,
-  },
-  modalCancelButton: {
-    paddingVertical: 12,
-    paddingHorizontal: 24,
+  continueButton: {
+    backgroundColor: '#f8d56b',
+    paddingVertical: 16,
+    paddingHorizontal: 48,
     borderRadius: 25,
-    backgroundColor: 'rgba(255, 255, 255, 0.1)',
   },
-  modalCancelText: {
-    fontSize: 16,
-    color: '#fff',
-  },
-  modalConfirmButton: {
-    paddingVertical: 12,
-    paddingHorizontal: 24,
-    borderRadius: 25,
-    backgroundColor: '#e94560',
-  },
-  modalConfirmText: {
-    fontSize: 16,
+  continueButtonText: {
+    fontSize: 20,
     fontWeight: 'bold',
-    color: '#fff',
-  },
-  shareModalContent: {
-    backgroundColor: '#1a1a2e',
-    borderRadius: 20,
-    padding: 24,
-    alignItems: 'center',
-    width: '90%',
-    maxWidth: 360,
-    borderWidth: 2,
-    borderColor: '#f8d56b',
-  },
-  closeShareModal: {
-    position: 'absolute',
-    top: 12,
-    right: 12,
-    padding: 8,
-  },
-  shareModalTitle: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    color: '#f8d56b',
-    marginBottom: 20,
-  },
-  qrContainer: {
-    backgroundColor: '#fff',
-    padding: 16,
-    borderRadius: 16,
-    marginBottom: 20,
-  },
-  qrPlaceholder: {
-    width: 180,
-    height: 180,
-    backgroundColor: 'rgba(248, 213, 107, 0.1)',
-    borderRadius: 16,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  shareCodeContainer: {
-    alignItems: 'center',
-    marginBottom: 20,
-  },
-  shareCodeLabel: {
-    fontSize: 14,
-    color: '#a0a0a0',
-    marginBottom: 8,
-  },
-  shareCode: {
-    fontSize: 36,
-    fontWeight: 'bold',
-    color: '#f8d56b',
-    letterSpacing: 4,
-  },
-  whatsappButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#25D366',
-    paddingVertical: 14,
-    paddingHorizontal: 32,
-    borderRadius: 30,
-    width: '100%',
-  },
-  whatsappButtonText: {
-    fontSize: 16,
-    fontWeight: 'bold',
-    color: '#fff',
-    marginLeft: 10,
+    color: '#1a1a2e',
   },
 });
