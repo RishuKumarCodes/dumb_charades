@@ -6,264 +6,247 @@ import {
   TextInput,
   TouchableOpacity,
   ScrollView,
-  Alert,
   KeyboardAvoidingView,
   Platform,
+  Alert,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useGameStore } from '../src/stores/gameStore';
+import { GameSettings, Difficulty } from '../src/types';
 
-const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
+const TIMER_OPTIONS = [30, 45, 60, 90];
+const ROUND_OPTIONS = [3, 5, 7, 10];
+const DIFFICULTY_OPTIONS: { label: string; value: Difficulty }[] = [
+  { label: 'Easy', value: 'easy' },
+  { label: 'Medium', value: 'medium' },
+  { label: 'Hard', value: 'hard' },
+  { label: 'All', value: 'all' },
+];
 
 export default function TeamSetupScreen() {
   const router = useRouter();
-  const [teamAPlayers, setTeamAPlayers] = useState<string[]>(['']);
-  const [teamBPlayers, setTeamBPlayers] = useState<string[]>(['']);
-  const [timerSeconds, setTimerSeconds] = useState('60');
-  const [totalRounds, setTotalRounds] = useState('10');
-  const [difficulty, setDifficulty] = useState('all');
-  const [isLoading, setIsLoading] = useState(false);
+  const { createGame } = useGameStore();
+
+  // Team A
+  const [teamAPlayers, setTeamAPlayers] = useState<string[]>(['', '']);
+  
+  // Team B
+  const [teamBPlayers, setTeamBPlayers] = useState<string[]>(['', '']);
+
+  // Settings
+  const [timer, setTimer] = useState(60);
+  const [rounds, setRounds] = useState(5);
+  const [difficulty, setDifficulty] = useState<Difficulty>('all');
 
   const addPlayer = (team: 'A' | 'B') => {
-    if (team === 'A') {
+    if (team === 'A' && teamAPlayers.length < 5) {
       setTeamAPlayers([...teamAPlayers, '']);
-    } else {
+    } else if (team === 'B' && teamBPlayers.length < 5) {
       setTeamBPlayers([...teamBPlayers, '']);
     }
   };
 
   const removePlayer = (team: 'A' | 'B', index: number) => {
-    if (team === 'A') {
-      if (teamAPlayers.length > 1) {
-        setTeamAPlayers(teamAPlayers.filter((_, i) => i !== index));
-      }
-    } else {
-      if (teamBPlayers.length > 1) {
-        setTeamBPlayers(teamBPlayers.filter((_, i) => i !== index));
-      }
+    if (team === 'A' && teamAPlayers.length > 1) {
+      setTeamAPlayers(teamAPlayers.filter((_, i) => i !== index));
+    } else if (team === 'B' && teamBPlayers.length > 1) {
+      setTeamBPlayers(teamBPlayers.filter((_, i) => i !== index));
     }
   };
 
-  const updatePlayer = (team: 'A' | 'B', index: number, value: string) => {
+  const updatePlayer = (team: 'A' | 'B', index: number, name: string) => {
     if (team === 'A') {
-      const updated = [...teamAPlayers];
-      updated[index] = value;
-      setTeamAPlayers(updated);
+      const newPlayers = [...teamAPlayers];
+      newPlayers[index] = name;
+      setTeamAPlayers(newPlayers);
     } else {
-      const updated = [...teamBPlayers];
-      updated[index] = value;
-      setTeamBPlayers(updated);
+      const newPlayers = [...teamBPlayers];
+      newPlayers[index] = name;
+      setTeamBPlayers(newPlayers);
     }
   };
 
-  const startGame = async () => {
-    const validTeamA = teamAPlayers.filter((p) => p.trim() !== '');
-    const validTeamB = teamBPlayers.filter((p) => p.trim() !== '');
+  const startGame = () => {
+    const teamAFiltered = teamAPlayers.filter(p => p.trim());
+    const teamBFiltered = teamBPlayers.filter(p => p.trim());
 
-    if (validTeamA.length === 0 || validTeamB.length === 0) {
+    if (teamAFiltered.length === 0 || teamBFiltered.length === 0) {
       Alert.alert('Error', 'Each team needs at least one player');
       return;
     }
 
-    setIsLoading(true);
+    const settings: GameSettings = {
+      timerSeconds: timer,
+      totalRounds: rounds,
+      difficulty,
+    };
 
-    try {
-      const response = await fetch(`${BACKEND_URL}/api/games`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          team_a_players: validTeamA,
-          team_b_players: validTeamB,
-          timer_seconds: parseInt(timerSeconds) || 60,
-          total_rounds: parseInt(totalRounds) || 10,
-          difficulty: difficulty,
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to create game');
-      }
-
-      const game = await response.json();
-      await AsyncStorage.setItem('currentGame', JSON.stringify(game));
-      router.push('/game-play');
-    } catch (error) {
-      console.error('Error creating game:', error);
-      Alert.alert('Error', 'Failed to start game. Please try again.');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const renderPlayerInputs = (team: 'A' | 'B') => {
-    const players = team === 'A' ? teamAPlayers : teamBPlayers;
-    const teamColor = team === 'A' ? '#e94560' : '#4ecdc4';
-
-    return (
-      <View style={[styles.teamCard, { borderColor: teamColor }]}>
-        <View style={[styles.teamHeader, { backgroundColor: teamColor }]}>
-          <Text style={styles.teamTitle}>Team {team}</Text>
-          <Text style={styles.playerCount}>{players.filter((p) => p.trim()).length} players</Text>
-        </View>
-
-        {players.map((player, index) => (
-          <View key={index} style={styles.playerInputRow}>
-            <TextInput
-              style={styles.playerInput}
-              placeholder={`Player ${index + 1}`}
-              placeholderTextColor="#666"
-              value={player}
-              onChangeText={(value) => updatePlayer(team, index, value)}
-            />
-            {players.length > 1 && (
-              <TouchableOpacity
-                style={styles.removeButton}
-                onPress={() => removePlayer(team, index)}
-              >
-                <Ionicons name="close-circle" size={24} color="#e94560" />
-              </TouchableOpacity>
-            )}
-          </View>
-        ))}
-
-        <TouchableOpacity
-          style={[styles.addPlayerButton, { borderColor: teamColor }]}
-          onPress={() => addPlayer(team)}
-        >
-          <Ionicons name="add-circle-outline" size={24} color={teamColor} />
-          <Text style={[styles.addPlayerText, { color: teamColor }]}>Add Player</Text>
-        </TouchableOpacity>
-      </View>
-    );
+    createGame(teamAFiltered, teamBFiltered, settings);
+    router.push('/game-play');
   };
 
   return (
     <SafeAreaView style={styles.container}>
       <KeyboardAvoidingView
-        style={styles.flex}
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        style={styles.keyboardView}
       >
-        <View style={styles.header}>
-          <TouchableOpacity
-            style={styles.backButton}
-            onPress={() => router.back()}
-          >
-            <Ionicons name="arrow-back" size={28} color="#f8d56b" />
-          </TouchableOpacity>
-          <Text style={styles.headerTitle}>Team Setup</Text>
-          <View style={styles.placeholder} />
-        </View>
+        <ScrollView contentContainerStyle={styles.scrollContent}>
+          {/* Header */}
+          <View style={styles.header}>
+            <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
+              <Ionicons name="arrow-back" size={24} color="#f8d56b" />
+            </TouchableOpacity>
+            <Text style={styles.headerTitle}>Setup Game</Text>
+            <View style={{ width: 24 }} />
+          </View>
 
-        <ScrollView
-          style={styles.content}
-          contentContainerStyle={styles.contentContainer}
-          showsVerticalScrollIndicator={false}
-        >
-          {renderPlayerInputs('A')}
-          {renderPlayerInputs('B')}
-
-          <View style={styles.settingsCard}>
-            <Text style={styles.settingsTitle}>Game Settings</Text>
-
-            <View style={styles.settingRow}>
-              <Text style={styles.settingLabel}>Timer (seconds)</Text>
-              <View style={styles.timerOptions}>
-                {['30', '45', '60', '90'].map((time) => (
-                  <TouchableOpacity
-                    key={time}
-                    style={[
-                      styles.timerOption,
-                      timerSeconds === time && styles.timerOptionActive,
-                    ]}
-                    onPress={() => setTimerSeconds(time)}
-                  >
-                    <Text
-                      style={[
-                        styles.timerOptionText,
-                        timerSeconds === time && styles.timerOptionTextActive,
-                      ]}
-                    >
-                      {time}s
-                    </Text>
+          {/* Team A */}
+          <View style={styles.teamSection}>
+            <View style={styles.teamHeader}>
+              <Text style={[styles.teamTitle, { color: '#4ecdc4' }]}>Team A</Text>
+              {teamAPlayers.length < 5 && (
+                <TouchableOpacity onPress={() => addPlayer('A')} style={styles.addButton}>
+                  <Ionicons name="add-circle" size={28} color="#4ecdc4" />
+                </TouchableOpacity>
+              )}
+            </View>
+            {teamAPlayers.map((player, index) => (
+              <View key={index} style={styles.playerRow}>
+                <TextInput
+                  style={styles.playerInput}
+                  placeholder={`Player ${index + 1}`}
+                  placeholderTextColor="#666"
+                  value={player}
+                  onChangeText={(text) => updatePlayer('A', index, text)}
+                />
+                {teamAPlayers.length > 1 && (
+                  <TouchableOpacity onPress={() => removePlayer('A', index)}>
+                    <Ionicons name="close-circle" size={24} color="#e94560" />
                   </TouchableOpacity>
-                ))}
+                )}
               </View>
+            ))}
+          </View>
+
+          {/* VS Divider */}
+          <View style={styles.vsDivider}>
+            <View style={styles.vsLine} />
+            <Text style={styles.vsText}>VS</Text>
+            <View style={styles.vsLine} />
+          </View>
+
+          {/* Team B */}
+          <View style={styles.teamSection}>
+            <View style={styles.teamHeader}>
+              <Text style={[styles.teamTitle, { color: '#e94560' }]}>Team B</Text>
+              {teamBPlayers.length < 5 && (
+                <TouchableOpacity onPress={() => addPlayer('B')} style={styles.addButton}>
+                  <Ionicons name="add-circle" size={28} color="#e94560" />
+                </TouchableOpacity>
+              )}
+            </View>
+            {teamBPlayers.map((player, index) => (
+              <View key={index} style={styles.playerRow}>
+                <TextInput
+                  style={styles.playerInput}
+                  placeholder={`Player ${index + 1}`}
+                  placeholderTextColor="#666"
+                  value={player}
+                  onChangeText={(text) => updatePlayer('B', index, text)}
+                />
+                {teamBPlayers.length > 1 && (
+                  <TouchableOpacity onPress={() => removePlayer('B', index)}>
+                    <Ionicons name="close-circle" size={24} color="#e94560" />
+                  </TouchableOpacity>
+                )}
+              </View>
+            ))}
+          </View>
+
+          {/* Settings */}
+          <View style={styles.settingsSection}>
+            <Text style={styles.sectionTitle}>Game Settings</Text>
+
+            {/* Timer */}
+            <Text style={styles.settingLabel}>Timer (seconds)</Text>
+            <View style={styles.optionsRow}>
+              {TIMER_OPTIONS.map((option) => (
+                <TouchableOpacity
+                  key={option}
+                  style={[
+                    styles.optionButton,
+                    timer === option && styles.optionButtonActive,
+                  ]}
+                  onPress={() => setTimer(option)}
+                >
+                  <Text
+                    style={[
+                      styles.optionText,
+                      timer === option && styles.optionTextActive,
+                    ]}
+                  >
+                    {option}s
+                  </Text>
+                </TouchableOpacity>
+              ))}
             </View>
 
-            <View style={styles.settingRow}>
-              <Text style={styles.settingLabel}>Total Rounds</Text>
-              <View style={styles.timerOptions}>
-                {['5', '10', '15', '20'].map((rounds) => (
-                  <TouchableOpacity
-                    key={rounds}
+            {/* Rounds */}
+            <Text style={styles.settingLabel}>Rounds</Text>
+            <View style={styles.optionsRow}>
+              {ROUND_OPTIONS.map((option) => (
+                <TouchableOpacity
+                  key={option}
+                  style={[
+                    styles.optionButton,
+                    rounds === option && styles.optionButtonActive,
+                  ]}
+                  onPress={() => setRounds(option)}
+                >
+                  <Text
                     style={[
-                      styles.timerOption,
-                      totalRounds === rounds && styles.timerOptionActive,
+                      styles.optionText,
+                      rounds === option && styles.optionTextActive,
                     ]}
-                    onPress={() => setTotalRounds(rounds)}
                   >
-                    <Text
-                      style={[
-                        styles.timerOptionText,
-                        totalRounds === rounds && styles.timerOptionTextActive,
-                      ]}
-                    >
-                      {rounds}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
+                    {option}
+                  </Text>
+                </TouchableOpacity>
+              ))}
             </View>
 
-            <View style={styles.settingRow}>
-              <Text style={styles.settingLabel}>Difficulty</Text>
-              <View style={styles.difficultyOptions}>
-                {[
-                  { key: 'all', label: 'All' },
-                  { key: 'easy', label: 'Easy' },
-                  { key: 'medium', label: 'Medium' },
-                  { key: 'hard', label: 'Hard' },
-                ].map((diff) => (
-                  <TouchableOpacity
-                    key={diff.key}
+            {/* Difficulty */}
+            <Text style={styles.settingLabel}>Difficulty</Text>
+            <View style={styles.optionsRow}>
+              {DIFFICULTY_OPTIONS.map((option) => (
+                <TouchableOpacity
+                  key={option.value}
+                  style={[
+                    styles.optionButton,
+                    difficulty === option.value && styles.optionButtonActive,
+                  ]}
+                  onPress={() => setDifficulty(option.value)}
+                >
+                  <Text
                     style={[
-                      styles.difficultyOption,
-                      difficulty === diff.key && styles.difficultyOptionActive,
+                      styles.optionText,
+                      difficulty === option.value && styles.optionTextActive,
                     ]}
-                    onPress={() => setDifficulty(diff.key)}
                   >
-                    <Text
-                      style={[
-                        styles.difficultyText,
-                        difficulty === diff.key && styles.difficultyTextActive,
-                      ]}
-                    >
-                      {diff.label}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
+                    {option.label}
+                  </Text>
+                </TouchableOpacity>
+              ))}
             </View>
           </View>
 
-          <TouchableOpacity
-            style={[styles.startButton, isLoading && styles.startButtonDisabled]}
-            onPress={startGame}
-            disabled={isLoading}
-            activeOpacity={0.8}
-          >
-            {isLoading ? (
-              <Text style={styles.startButtonText}>Creating Game...</Text>
-            ) : (
-              <>
-                <Ionicons name="play" size={24} color="#1a1a2e" />
-                <Text style={styles.startButtonText}>Start Game</Text>
-              </>
-            )}
+          {/* Start Button */}
+          <TouchableOpacity style={styles.startButton} onPress={startGame}>
+            <Ionicons name="play" size={24} color="#1a1a2e" />
+            <Text style={styles.startButtonText}>Start Game</Text>
           </TouchableOpacity>
         </ScrollView>
       </KeyboardAvoidingView>
@@ -276,160 +259,116 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#1a1a2e',
   },
-  flex: {
+  keyboardView: {
     flex: 1,
+  },
+  scrollContent: {
+    padding: 20,
+    paddingBottom: 40,
   },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(248, 213, 107, 0.2)',
+    marginBottom: 24,
   },
   backButton: {
-    padding: 8,
+    padding: 4,
   },
   headerTitle: {
-    fontSize: 20,
+    fontSize: 24,
     fontWeight: 'bold',
     color: '#f8d56b',
   },
-  placeholder: {
-    width: 44,
-  },
-  content: {
-    flex: 1,
-  },
-  contentContainer: {
-    padding: 16,
-    paddingBottom: 40,
-  },
-  teamCard: {
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
-    borderRadius: 16,
-    borderWidth: 2,
-    marginBottom: 20,
-    overflow: 'hidden',
+  teamSection: {
+    marginBottom: 16,
   },
   teamHeader: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
-    paddingVertical: 12,
-    paddingHorizontal: 16,
+    justifyContent: 'space-between',
+    marginBottom: 12,
   },
   teamTitle: {
     fontSize: 20,
     fontWeight: 'bold',
-    color: '#fff',
   },
-  playerCount: {
-    fontSize: 14,
-    color: 'rgba(255, 255, 255, 0.8)',
+  addButton: {
+    padding: 4,
   },
-  playerInputRow: {
+  playerRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 8,
+    marginBottom: 10,
+    gap: 10,
   },
   playerInput: {
     flex: 1,
-    backgroundColor: 'rgba(255, 255, 255, 0.1)',
-    borderRadius: 10,
+    backgroundColor: '#16213e',
+    borderRadius: 12,
     paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingVertical: 14,
     fontSize: 16,
     color: '#fff',
+    borderWidth: 1,
+    borderColor: '#2a2a4e',
   },
-  removeButton: {
-    marginLeft: 10,
-    padding: 4,
-  },
-  addPlayerButton: {
+  vsDivider: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 12,
+    marginVertical: 16,
+  },
+  vsLine: {
+    flex: 1,
+    height: 1,
+    backgroundColor: '#333',
+  },
+  vsText: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#f8d56b',
     marginHorizontal: 16,
-    marginBottom: 16,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderStyle: 'dashed',
   },
-  addPlayerText: {
-    fontSize: 16,
-    marginLeft: 8,
+  settingsSection: {
+    marginTop: 20,
+    marginBottom: 24,
   },
-  settingsCard: {
-    backgroundColor: 'rgba(248, 213, 107, 0.08)',
-    borderRadius: 16,
-    padding: 16,
-    marginBottom: 20,
-  },
-  settingsTitle: {
+  sectionTitle: {
     fontSize: 20,
     fontWeight: 'bold',
     color: '#f8d56b',
     marginBottom: 16,
   },
-  settingRow: {
-    marginBottom: 16,
-  },
   settingLabel: {
-    fontSize: 16,
-    color: '#fff',
+    fontSize: 14,
+    color: '#aaa',
     marginBottom: 10,
+    marginTop: 12,
   },
-  timerOptions: {
+  optionsRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 8,
+    gap: 10,
   },
-  timerOption: {
-    paddingVertical: 10,
+  optionButton: {
     paddingHorizontal: 20,
-    borderRadius: 20,
-    backgroundColor: 'rgba(255, 255, 255, 0.1)',
-    marginRight: 8,
-    marginBottom: 8,
+    paddingVertical: 12,
+    borderRadius: 25,
+    backgroundColor: '#16213e',
+    borderWidth: 1,
+    borderColor: '#333',
   },
-  timerOptionActive: {
+  optionButtonActive: {
     backgroundColor: '#f8d56b',
+    borderColor: '#f8d56b',
   },
-  timerOptionText: {
+  optionText: {
     fontSize: 14,
-    color: '#a0a0a0',
-  },
-  timerOptionTextActive: {
-    color: '#1a1a2e',
-    fontWeight: 'bold',
-  },
-  difficultyOptions: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-  },
-  difficultyOption: {
-    paddingVertical: 10,
-    paddingHorizontal: 16,
-    borderRadius: 20,
-    backgroundColor: 'rgba(255, 255, 255, 0.1)',
-    marginRight: 8,
-    marginBottom: 8,
-  },
-  difficultyOptionActive: {
-    backgroundColor: '#e94560',
-  },
-  difficultyText: {
-    fontSize: 14,
-    color: '#a0a0a0',
-  },
-  difficultyTextActive: {
     color: '#fff',
-    fontWeight: 'bold',
+    fontWeight: '600',
+  },
+  optionTextActive: {
+    color: '#1a1a2e',
   },
   startButton: {
     flexDirection: 'row',
@@ -438,15 +377,12 @@ const styles = StyleSheet.create({
     backgroundColor: '#f8d56b',
     paddingVertical: 18,
     borderRadius: 30,
-    marginTop: 8,
-  },
-  startButtonDisabled: {
-    opacity: 0.6,
+    marginTop: 10,
   },
   startButtonText: {
     fontSize: 20,
     fontWeight: 'bold',
     color: '#1a1a2e',
-    marginLeft: 8,
+    marginLeft: 10,
   },
 });
