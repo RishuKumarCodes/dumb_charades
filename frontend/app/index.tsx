@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -12,14 +12,15 @@ import {
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useGameStore } from '../src/stores/gameStore';
 
 const { width, height } = Dimensions.get('window');
 
-const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
-
 export default function HomeScreen() {
   const router = useRouter();
-  const [stats, setStats] = useState({ total_movies: 0, total_games: 0, available_movies: 0 });
+  const { getStats, totalGamesPlayed } = useGameStore();
+  const stats = getStats();
+  
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const scaleAnim = useRef(new Animated.Value(0.8)).current;
 
@@ -37,19 +38,7 @@ export default function HomeScreen() {
         useNativeDriver: Platform.OS !== 'web',
       }),
     ]).start();
-
-    fetchStats();
   }, []);
-
-  const fetchStats = async () => {
-    try {
-      const response = await fetch(`${BACKEND_URL}/api/stats`);
-      const data = await response.json();
-      setStats(data);
-    } catch (error) {
-      console.log('Error fetching stats:', error);
-    }
-  };
 
   return (
     <SafeAreaView style={styles.container}>
@@ -73,13 +62,18 @@ export default function HomeScreen() {
           {/* Stats */}
           <View style={styles.statsContainer}>
             <View style={styles.statBox}>
-              <Text style={styles.statNumber}>{stats.total_movies}</Text>
+              <Text style={styles.statNumber}>{stats.total}</Text>
               <Text style={styles.statLabel}>Movies</Text>
             </View>
             <View style={styles.statDivider} />
             <View style={styles.statBox}>
               <Text style={styles.statNumber}>50+</Text>
               <Text style={styles.statLabel}>Years</Text>
+            </View>
+            <View style={styles.statDivider} />
+            <View style={styles.statBox}>
+              <Text style={styles.statNumber}>{totalGamesPlayed}</Text>
+              <Text style={styles.statLabel}>Played</Text>
             </View>
           </View>
 
@@ -90,17 +84,8 @@ export default function HomeScreen() {
               onPress={() => router.push('/team-setup')}
               activeOpacity={0.8}
             >
-              <Ionicons name="add-circle" size={28} color="#1a1a2e" />
-              <Text style={styles.playButtonText}>Create Game</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={styles.joinButton}
-              onPress={() => router.push('/join-game')}
-              activeOpacity={0.8}
-            >
-              <Ionicons name="enter" size={28} color="#fff" />
-              <Text style={styles.joinButtonText}>Join Game</Text>
+              <Ionicons name="play-circle" size={28} color="#1a1a2e" />
+              <Text style={styles.playButtonText}>Play Now</Text>
             </TouchableOpacity>
 
             <TouchableOpacity
@@ -127,6 +112,12 @@ export default function HomeScreen() {
               <Ionicons name="trophy" size={24} color="#f8d56b" />
               <Text style={styles.featureText}>Live Scores</Text>
             </View>
+          </View>
+
+          {/* Offline Badge */}
+          <View style={styles.offlineBadge}>
+            <Ionicons name="cloud-offline" size={16} color="#4ecdc4" />
+            <Text style={styles.offlineText}>Works Offline</Text>
           </View>
         </Animated.View>
       </ScrollView>
@@ -176,22 +167,22 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: 'rgba(248, 213, 107, 0.1)',
-    paddingHorizontal: 32,
+    paddingHorizontal: 24,
     paddingVertical: 20,
     borderRadius: 16,
     marginBottom: 32,
   },
   statBox: {
     alignItems: 'center',
-    paddingHorizontal: 24,
+    paddingHorizontal: 20,
   },
   statNumber: {
-    fontSize: 32,
+    fontSize: 28,
     fontWeight: 'bold',
     color: '#f8d56b',
   },
   statLabel: {
-    fontSize: 14,
+    fontSize: 12,
     color: '#a0a0a0',
     marginTop: 4,
   },
@@ -228,23 +219,6 @@ const styles = StyleSheet.create({
     color: '#1a1a2e',
     marginLeft: 10,
   },
-  joinButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#4ecdc4',
-    paddingVertical: 18,
-    paddingHorizontal: 48,
-    borderRadius: 30,
-    width: '100%',
-    maxWidth: 300,
-  },
-  joinButtonText: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: '#fff',
-    marginLeft: 10,
-  },
   secondaryButton: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -268,6 +242,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-around',
     width: '100%',
     paddingHorizontal: 16,
+    marginBottom: 24,
   },
   featureItem: {
     alignItems: 'center',
@@ -277,5 +252,19 @@ const styles = StyleSheet.create({
     color: '#a0a0a0',
     marginTop: 8,
     textAlign: 'center',
+  },
+  offlineBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(78, 205, 196, 0.15)',
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    borderRadius: 20,
+  },
+  offlineText: {
+    fontSize: 12,
+    color: '#4ecdc4',
+    marginLeft: 6,
+    fontWeight: '600',
   },
 });
