@@ -20,6 +20,7 @@ export default function HomeScreen() {
   const router = useRouter();
   const { getStats, totalGamesPlayed } = useGameStore();
   const stats = getStats();
+  const totalMovies = stats.totalMovies;
   
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const scaleAnim = useRef(new Animated.Value(0.8)).current;
