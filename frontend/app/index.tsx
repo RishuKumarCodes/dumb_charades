@@ -30,16 +30,16 @@ export default function HomeScreen() {
       Animated.timing(fadeAnim, {
         toValue: 1,
         duration: 800,
-        useNativeDriver: Platform.OS !== 'web',
+        useNativeDriver: true,
       }),
       Animated.spring(scaleAnim, {
         toValue: 1,
         friction: 8,
         tension: 40,
-        useNativeDriver: Platform.OS !== 'web',
+        useNativeDriver: true,
       }),
     ]).start();
-  }, []);
+  }, [fadeAnim, scaleAnim]);
 
   return (
     <SafeAreaView style={styles.container}>
