@@ -63,7 +63,7 @@ export default function HomeScreen() {
           {/* Stats */}
           <View style={styles.statsContainer}>
             <View style={styles.statBox}>
-              <Text style={styles.statNumber}>{stats.total}</Text>
+              <Text style={styles.statNumber}>{totalMovies}</Text>
               <Text style={styles.statLabel}>Movies</Text>
             </View>
             <View style={styles.statDivider} />
