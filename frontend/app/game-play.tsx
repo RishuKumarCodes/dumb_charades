@@ -33,7 +33,7 @@ export default function GamePlayScreen() {
     heroine: false,
   });
 
-  const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const progressAnim = useRef(new Animated.Value(1)).current;
   const cardScaleAnim = useRef(new Animated.Value(0.8)).current;
 
